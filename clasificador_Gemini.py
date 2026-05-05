@@ -3,56 +3,35 @@ Proyecto: Derecho a las Víctimas
 Script: Prueba de Gemini via API de Google
 
 Descripción:
-    Permite clasificar normativas legales usando distintos modelos de lenguaje.
-    El script toma el archivo test.xlsx (sin etiquetas) y genera un Excel
-    con las predicciones de cada clasificador para luego evaluar con evaluacion.ipynb.
+Este script clasifica normas legales argentinas según si consagran o no derechos de las víctimas, 
+utilizando el modelo Gemini de Google a través de su API. 
 
-Clasificadores a probar:
-    - claude   : Claude via API de Anthropic (requiere API key)
-    - gpt      : GPT via API de OpenAI (requiere API key)
-    - gemini   : Gemini via API de Google (requiere API key — tier gratuito disponible)
-    - groq     : Llama/Mixtral via Groq API (requiere API key — tier gratuito disponible)
-    - ollama   : Modelos locales via Ollama (gratis, requiere Ollama instalado)
-    - beto     : BETO zero-shot via HuggingFace (gratis, sin API key)
-
-Uso:
-    1. Completar la sección de configuración con las rutas y API keys
-    2. Elegir el clasificador en CLASIFICADOR_ACTIVO
-    3. Correr: python clasificador.py
+Input:
+    - test.xlsx
+    - resultado_gemini_parcial.xlsx 
 
 Output:
-    resultado_{CLASIFICADOR_ACTIVO}.xlsx — para evaluar con evaluacion.ipynb
+    - resultado_gemini_parte3.xlsx (normas 42-62)
+    - resultado_gemini_final.xlsx (todas las normas mergeadas)
 """
 
 import pandas as pd
 import os
 import time
-
 from dotenv import load_dotenv
 load_dotenv()
 
-# Configuración 
+# Configuración
+FILE_TEST             = 'test.xlsx'
+FILE_PARCIAL          = 'resultado_gemini_parcial.xlsx'
+FILE_PARTE3           = 'resultado_gemini_parte3.xlsx'
+FILE_FINAL            = 'resultado_gemini_final.xlsx'
+CLASIFICADOR          = 'gemini'
+GOOGLE_API_KEY        = os.getenv('GOOGLE_API_KEY', '')
+MODELO                = {'gemini': 'gemini-2.5-flash'}
+PAUSA_ENTRE_LLAMADAS  = 15  # segundos — no bajar para no agotar el cupo
 
-# Archivo de entrada (sin etiquetas)
-
-FILE_TEST = 'test.xlsx'
-
-# Clasificador a usar — cambiar según lo que se quiera probar:
-CLASIFICADOR= 'gemini'
-#API KEY
-GOOGLE_API_KEY  = os.getenv('GOOGLE_API_KEY', '')       
-
-
-MODELO = {
-    'gemini': 'gemini-1.5-flash-8b',             # gratuito
-}
-
-# Pausa entre llamadas a la API (segundos) — evita rate limits
-PAUSA_ENTRE_LLAMADAS = 5
-
-# Prompt de clasificación 
-# Basado en el criterio definido por los investigadores
-
+# Prompt
 PROMPT_SISTEMA = """Sos un experto en análisis de normativa legal argentina. 
 Tu tarea es clasificar si una norma consagra o no derechos de las víctimas.
 
@@ -74,21 +53,20 @@ EJEMPLOS:
 - Ley 25633 (Día Nacional de la Memoria) → 0. Declaración conmemorativa sin derechos concretos.
 
 INSTRUCCIÓN:
-Respondé con el número 1 o 0 seguido de dos puntos y una oración breve explicando tu decisión. Ejemplo: '1: La norma establece asistencia directa a víctimas de inundación."""
+Respondé con el número 1 o 0 seguido de dos puntos y una oración breve explicando tu decisión. Ejemplo: '1: La norma establece asistencia directa a víctimas de inundación.'"""
+
 
 def construir_prompt_usuario(row):
-    """Construye el prompt con los datos de la norma."""
-    titulo  = str(row.get('Título', '')).strip()  if pd.notna(row.get('Título'))  else ''
-    resumen = str(row.get('Resumen', '')).strip() if pd.notna(row.get('Resumen')) else ''
+    titulo    = str(row.get('Título', '')).strip()   if pd.notna(row.get('Título'))    else ''
+    resumen   = str(row.get('Resumen', '')).strip()  if pd.notna(row.get('Resumen'))   else ''
     articulos = str(row.get('Artículos', '')).strip() if pd.notna(row.get('Artículos')) else ''
 
     texto = f"Tipo: {row.get('Tipo', '')}\nNúmero: {row.get('Número', '')}\nTítulo: {titulo}"
     if resumen:
         texto += f"\nResumen: {resumen}"
     if articulos:
-        texto += f"\nArtículos relevantes: {articulos[:500]}"  # limita para no exceder tokens
-
-    texto += "\n\n¿Esta norma consagra derechos de las víctimas? Respondé solo con 1 o 0."
+        texto += f"\nArtículos relevantes: {articulos[:500]}"
+    texto += "\n\n¿Esta norma consagra derechos de las víctimas?"
     return texto
 
 
@@ -100,9 +78,7 @@ def parsear_respuesta(respuesta):
         return 0, respuesta
     else:
         return -1, f"Respuesta inválida: {respuesta}"
-
-# Clasificadores 
-
+    
 
 def clasificar_con_gemini(df):
     try:
@@ -112,7 +88,7 @@ def clasificar_con_gemini(df):
         from google import genai
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
-    predicciones = []
+    predicciones   = []
     justificaciones = []
 
     for i, row in df.iterrows():
@@ -134,47 +110,51 @@ def clasificar_con_gemini(df):
 
     return predicciones, justificaciones
 
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def main():
     print('=' * 60)
-    print(f'  Clasificador: {CLASIFICADOR.upper()}')
+    print(f'  Clasificador: GEMINI — Parte 3 (normas 42 en adelante)')
     print('=' * 60)
 
-    # Cargar datos
-    print(f'\nCargando {FILE_TEST}...')
+    # Cargar y filtrar — solo las normas pendientes
     df = pd.read_excel(FILE_TEST)
     df['Número'] = df['Número'].astype(str).str.strip()
-    print(f'  {len(df)} normas cargadas')
+    df = df.iloc[41:]  # arranca desde la norma 42
+    print(f'\nNormas a clasificar: {len(df)}')
 
     # Clasificar
-    print(f'\nClasificando con {CLASIFICADOR}...')
+    print(f'\nClasificando con Gemini...')
+    predicciones, justificaciones = clasificar_con_gemini(df)
 
-
-    clasificadores = {
-        'gemini': clasificar_con_gemini,
-    }
-    predicciones, justificaciones = clasificadores[CLASIFICADOR](df)
-
-    # Armar resultado
-    df_resultado = df[['Tipo', 'Número', 'Título']].copy()
-    df_resultado['caso_ok'] = predicciones
-    df_resultado['Justificación'] = justificaciones
+    # Armar resultado parte 3
+    df_parte3 = df[['Tipo', 'Número', 'Título']].copy()
+    df_parte3['caso_ok']      = predicciones
+    df_parte3['Justificación'] = justificaciones
 
     # Estadísticas
     validos = [p for p in predicciones if p != -1]
     errores = [p for p in predicciones if p == -1]
-    print(f'\n── Resultado ──────────────────────────────────────')
     print(f'  Total clasificadas: {len(validos)} de {len(df)}')
     print(f'  caso_ok = 1: {predicciones.count(1)}')
     print(f'  caso_ok = 0: {predicciones.count(0)}')
     if errores:
         print(f'  Errores:     {len(errores)} (revisar columna Justificación)')
 
-    # Guardar
-    output = f'resultado_{CLASIFICADOR}.xlsx'
-    df_resultado.to_excel(output, index=False)
-    print(f'\n Guardado: {output}')
+    # Guardar parte 3
+    df_parte3.to_excel(FILE_PARTE3, index=False)
+    print(f'\n✅ Guardado: {FILE_PARTE3}')
+
+    # Mergear con el parcial anterior
+    print('\nMergeando con resultado parcial anterior...')
+    df_parcial = pd.read_excel(FILE_PARCIAL)
+    df_final   = pd.concat([df_parcial, df_parte3]).reset_index(drop=True)
+    df_final.to_excel(FILE_FINAL, index=False)
+    print(f'✅ Guardado: {FILE_FINAL}')
+    print(f'\nTotal final: {len(df_final)} normas')
+    print(f'  caso_ok = 1: {(df_final["caso_ok"]==1).sum()}')
+    print(f'  caso_ok = 0: {(df_final["caso_ok"]==0).sum()}')
+    if (df_final['caso_ok']==-1).sum() > 0:
+        print(f'  Errores: {(df_final["caso_ok"]==-1).sum()} — necesitás una parte 4')
+
+
 if __name__ == '__main__':
     main()
